@@ -1,0 +1,28 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+ksp <- read.csv("~/Downloads/kickstarter-projects/ks-projects-201801.csv")
+View(ksp) 
+```
+
+
+```{r}
+sum(is.na(ksp))
+str(ksp)
+sapply(ksp, function(x) sum(is.na(x)))
+sapply(ksp, function(x) sum(is.null(x)))
+```
+
+
+```{r}
+ksp.new <- ksp[-13]
+sapply(ksp.new, function(x) sum(is.na(x)))
+```
+
+
+
+
