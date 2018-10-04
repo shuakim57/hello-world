@@ -1,6 +1,8 @@
 ---
 title: "R Notebook"
-output: html_notebook
+output:
+  pdf_document: default
+  html_notebook: default
 ---
 
 
@@ -23,6 +25,46 @@ ksp.new <- ksp[-13]
 sapply(ksp.new, function(x) sum(is.na(x)))
 ```
 
+```{r}
+ksp.new$state <- ifelse(ksp.new$state == 'successful', 'success', 'fail')
+prop.table(table(ksp.new$state))
+barplot(prop.table(table(ksp.new$state)))
+
+#Since our target variable is state, I prefer the state variable as binary - either success or fail. 
+#35% of projects are successful. There's no difference in proportion after changing to binary. 
+```
+```{r}
+prop.table(table(ksp.new$main_category))
+barplot(prop.table(table(ksp.new$main_category)))
+#The most popular kickstarter main category is Film & Video, Music, and Journalism. Let's take a look at their success rate. 
+```
 
 
+```{r}
+prop.table(table((ksp.new$state[ksp.new$main_category == 'Film & Video'])))
+prop.table(table((ksp.new$state[ksp.new$main_category == 'Music'])))
+prop.table(table((ksp.new$state[ksp.new$main_category == 'Publishing'])))
+
+#Music industry has a highest success rate at 46% among three categories.
+
+```
+
+
+
+```{r}
+prop.table(table(ksp.new$main_category[ksp.new$state=='success']))
+barplot(prop.table(table((ksp.new$main_category[ksp.new$state == 'success']))))
+#From the graph, we can tell Music, Film & Video, and Publishing has highest proportion of success. 
+```
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
 
