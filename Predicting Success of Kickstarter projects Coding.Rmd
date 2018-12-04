@@ -1,0 +1,895 @@
+---
+Capstone Project 
+'Predict the success of kickstarter project' by Hyeonsuk Kim 
+---
+
+```{r}
+library(tidyverse)
+library(ggthemes)
+library(lubridate)
+library(rworldmap)
+library(gplots)
+library(knitr)
+library(MASS)
+library(RCurl)  
+library(leaps)
+library(glmnet)
+library(randomForest)
+library(e1071)
+library(caret)
+library(caretEnsemble)
+library(ROCR)
+library(mlbench)
+library(caret)
+library(caretEnsemble)
+library(pROC)
+library(PCAmixdata)
+```
+
+
+```{r}
+ksp <- read.csv("~/Downloads/ks-projects-201801.csv")
+```
+
+
+#1 Data Cleaning 
+
+```{r}
+sum(is.na(ksp))
+str(ksp)
+sapply(ksp, function(x) sum(is.na(x)))
+sapply(ksp, function(x) sum(is.null(x)))
+#usd.pledged has 3797 missing values. I will just replace the value to the mean of its column. 
+```
+
+
+```{r}
+ksp$usd.pledged <- ifelse(is.na(ksp$usd.pledged), mean(na.omit(ksp$usd.pledged)), ksp$usd.pledged)
+sapply(ksp, function(x) sum(is.na(x)))
+ksp$ID <- as.character(ksp$ID)
+ksp$name <- as.character(ksp$name)
+
+#Now I have no missing values in the dataset
+```
+
+```{r}
+ksp.new <- ksp[ksp$state == 'failed' | ksp$state == 'successful', ]
+ksp.new$state <- as.character(ksp.new$state)
+ksp.new$state <- as.factor(ksp.new$state)
+prop.table(table(ksp.new$state))
+barplot(prop.table(table(ksp.new$state)))
+
+#Since our target variable is state, I subsetted records that the state is either success or fail to make it binary problem
+#Success rate has been incresed to 40% (35% before) after dropping other states.
+```
+
+```{r}
+ksp.new$duration <- as.Date(ksp.new$deadline) - as.Date(ksp.new$launched)
+ksp.new$duration <- as.numeric(ksp.new$duration)
+#added a new variable called duration to understand how many days spent for each project
+```
+
+
+```{r}
+ksp.new <- ksp.new %>% 
+  separate(col = "deadline", into = c("deadline_year", "deadline_month", "deadline_day"), sep = "-") %>%
+  separate(col = "launched", into = c("launched_year", "launched_month", "launched_day"), sep = "-")
+#broke down the date variables to year, month and day
+```
+
+
+
+```{r}
+str(ksp.new)
+```
+
+
+```{r}
+ksp.new1 <- ksp.new[,c(1:4,6,7,10,11,5,16,15,18,19,20,14)]
+str(ksp.new1)
+#reordering columns
+```
+
+
+
+```{r}
+ggplot(ksp.new1, aes(country)) + geom_bar()
+ggplot(ksp.new1, aes(currency)) + geom_bar()
+#when you see the graph below, most of the projects are took place in US. To reduce the level of columns, I'm going to make it binary either us or not. Same for currency.
+```
+ 
+```{r}
+ksp.new1$country <- as.character(ksp.new1$country)
+ksp.new1$country[ksp.new1$country %in% c("JP", "LU", "AT", "HK", "SG", "BE", "CH", "IE", "NO", "DK", 
+                                       "MX", "NZ", "SE", "ES", "IT", "NL", "FR", "DE","AU","CA", "GB",'N,0"')] <- "Others"
+ksp.new1$country <- as.factor(ksp.new1$country)
+prop.table(table(ksp.new1$country))
+barplot(prop.table(table(ksp.new1$country)))
+
+ksp.new1$currency <- as.character(ksp.new1$currency)
+ksp.new1$currency[ksp.new1$currency %in% c("AUD","CHF","DKK","EUR","HKD","JPY","MXN","NOK","NZD","SEK","SGD","CAD","GBP")] <- "Others"
+ksp.new1$currency <- as.factor(ksp.new1$currency)
+prop.table(table(ksp.new1$currency))
+barplot(prop.table(table(ksp.new1$currency)))
+
+#approximately 80% of projects are held in US and 20% are held in other countries 
+```
+
+
+
+```{r}
+state.freq <- ksp %>%
+  group_by(state) %>%
+  summarize(count=n()) %>%
+  arrange(desc(count))
+
+state.freq$state <- factor(state.freq$state, levels=state.freq$state)
+
+ggplot(state.freq, aes(state, count, fill=count)) + geom_bar(stat="identity") + 
+  ggtitle("Projects by Status") + xlab("Project Status") + ylab("Frequency") + 
+  geom_text(aes(label=count), vjust=-0.5)  + 
+  theme(plot.title=element_text(hjust=0.5), axis.title=element_text(size=12, face="bold"), 
+        axis.text.x=element_text(size=12), legend.position="null") + 
+  scale_fill_gradient(low="grey", high="grey")
+
+```
+
+
+```{r}
+#Below graph shows the popularity of each category 
+
+cat.freq <- ksp %>%
+  group_by(main_category) %>%
+  summarize(count=n()) %>%
+  arrange(desc(count))
+
+cat.freq$main_category <- factor(cat.freq$main_category, levels=cat.freq$main_category)
+
+
+ggplot(cat.freq, aes(main_category, count, fill=count)) + geom_bar(stat="identity") + 
+    ggtitle("Projects by Category") + xlab("Project Category") + ylab("Frequency") + 
+    geom_text(aes(label=count), vjust=-0.5, size=3) + 
+    theme(plot.title=element_text(hjust=0.5), axis.title=element_text(size=10, face="bold"), 
+          axis.text.x=element_text(size=10, angle=90), legend.position="null") + 
+    scale_fill_gradient(low="grey", high="grey") 
+```
+
+```{r}
+#Below graph shows the top 15 popular sub-category projects
+subcat.freq <- ksp %>%
+  group_by(category) %>%
+  summarize(count=n()) %>%
+  arrange(desc(count))
+
+subcat.freq$category <- factor(subcat.freq$category, levels=subcat.freq$category)
+
+ggplot(head(subcat.freq, 15), aes(category, count, fill=count)) + geom_bar(stat="identity") + 
+    ggtitle("Projects by Sub_Category") + xlab("SubCategory") + ylab("Frequency") + 
+    geom_text(aes(label=count), vjust=-0.5, size =3) + 
+    theme(plot.title=element_text(hjust=0.5), axis.title=element_text(size=10, face="bold"), 
+          axis.text.x=element_text(size=10, angle=90), legend.position="null") + 
+    scale_fill_gradient(low="grey", high="grey")
+```
+
+```{r}
+#Below table shows the projects that pledged the higheset amount of crowd funding. 
+
+kable(head(ksp[order(-ksp$usd_pledged_real), c(2,3,14)], 15))
+```
+
+
+```{r}
+#Below table shows that projects had highest number of backers. 
+
+kable(head(ksp[order(-ksp$backers), c(2,3,11)], 15))
+```
+
+
+```{r}
+# This illustrate the average number backers in each category that projects are successful. 
+
+backers.tot <- ksp %>% 
+  filter(state %in% c("successful")) %>%
+  group_by(main_category) %>%
+  summarize(project=n(), backers=sum(backers)) %>%
+  mutate(total=backers/project) %>%
+  arrange(desc(total))
+
+backers.tot$main_category <- factor(backers.tot$main_category, levels=backers.tot$main_category)
+
+ggplot(backers.tot, aes(main_category, total, fill=total)) + geom_bar(stat="identity") + 
+  ggtitle("Average Number of Backers by Each Category") + xlab("Project Category") + 
+  ylab("Number of backers") + geom_text(aes(label=round(total), vjust=-0.5), size = 3) + 
+    theme(plot.title=element_text(hjust=0.5), axis.title=element_text(size=10, face="bold"), 
+          axis.text.x=element_text(size=8, angle=90), legend.position="null") + 
+    scale_fill_gradient(low="grey", high="grey")
+```
+
+```{r}
+#Below graph shows the average goal amount in each category where projects are successful. 
+
+Goal.tot <- ksp %>%
+  filter(state %in% c("successful")) %>%
+  group_by(main_category) %>%
+  summarize(goal=sum(usd_goal_real), project=n()) %>%
+  mutate(total = goal/project)  %>%
+  arrange(desc(total))
+
+Goal.tot$main_category <- factor(Goal.tot$main_category, levels=Goal.tot$main_category)
+
+ggplot(Goal.tot, aes(main_category, total, fill=total)) + geom_bar(stat="identity") + 
+       ggtitle("Average Goal amount by Each Category") + xlab("Project Category") +ylab("Goal Amount")  +                 geom_text(aes(label=paste0("$", round(total))), size=3) + theme(plot.title=element_text(hjust=0.5), axis.title=element_text(size=10, face="bold"), 
+          axis.text.x=element_text(size=8, angle=90), legend.position="null") + 
+    scale_fill_gradient(low="grey", high="grey")
+
+```
+
+```{r}
+
+#Below graph shows that average pledged amount per backers where projects are successful. 
+
+pledged.avg <- ksp %>%
+  filter(state %in% c("successful")) %>%
+  group_by(main_category) %>%
+  summarize(pledged=sum(usd_pledged_real), backers=sum(backers)) %>%
+  mutate(avg=pledged/backers) %>%
+  arrange(desc(avg))
+
+pledged.avg$main_category <- factor(pledged.avg$main_category, levels=pledged.avg$main_category)
+
+ggplot(pledged.avg, aes(main_category, avg, fill=avg)) + geom_bar(stat="identity") + 
+  ggtitle("Average Amount Pledged per Backer") + xlab("Project Category") + 
+  ylab("Amount Pledged (USD)") + 
+  geom_text(aes(label=paste0("$", round(avg,2))), vjust=-0.5,size=3)  + theme(plot.title=element_text(hjust=0.5), axis.title=element_text(size=10, face="bold"), 
+          axis.text.x=element_text(size=8, angle=90), legend.position="null") + 
+    scale_fill_gradient(low="grey", high="grey")
+```
+
+```{r}
+year.freq <- ksp %>%
+  filter(year(launched)!="1970") %>%
+  group_by(year=year(launched)) %>%
+  summarize(count=n())
+
+ggplot(year.freq, aes(year, count, fill=count)) + geom_bar(stat="identity") + 
+  ggtitle("Number of Projects by Launch Year") + xlab("Year") + ylab("Frequency") + 
+  scale_x_discrete(limits=c(2009:2018)) + 
+  geom_text(aes(label=paste0(count)), vjust=-0.5, size= 3)  + 
+  theme(plot.title=element_text(hjust=0.5), axis.title=element_text(size=10, face="bold"), 
+        axis.text.x=element_text(size=10), legend.position="null") + 
+  scale_fill_gradient(low="grey", high="grey")
+```
+
+
+```{r}
+country.freq <- ksp.new1 %>%
+  filter(state %in% c("successful", "failed")) %>%
+  group_by(country, state) %>%
+  summarize(count=n()) %>%
+  mutate(pct=count/sum(count)) %>%
+  arrange(desc(state))
+
+ggplot(country.freq, aes(country, pct, fill =state))  + geom_bar(stat="identity") 
+```
+
+
+```{r}
+state.pct <- ksp %>%
+  filter(state %in% c("successful", "failed")) %>%
+  group_by(main_category, state) %>%
+  summarize(count=n()) %>%
+  mutate(pct=count/sum(count)) %>%
+  arrange(desc(state), pct)
+
+state.pct$main_category <- factor(state.pct$main_category, 
+                                  levels=state.pct$main_category[1:(nrow(state.pct)/2)])
+
+ggplot(state.pct, aes(main_category, pct, fill=state)) + geom_bar(stat="identity") + 
+  ggtitle("Success vs. Failure Rate by Project Category") + 
+  xlab("Project Category") + ylab("Percentage") + scale_y_continuous(labels=scales::percent) + 
+  scale_fill_discrete(name="Project Status", breaks=c("successful", "failed"),
+                      labels=c("Success", "Failure")) + 
+  geom_text(aes(label=paste0(round(pct*100,1),"%")), position=position_stack(vjust=0.5), 
+            colour="white", size=4)  + 
+  theme(plot.title=element_text(hjust=0.5), axis.title=element_text(size=12, face="bold"), 
+        axis.text.x=element_text(size=10), legend.position="bottom", 
+        legend.title=element_text(size=10, face="bold")) + coord_flip()
+
+```
+
+
+
+
+```{r}
+state.pct2 <- ksp %>%
+  filter(year(launched)!="1970", state %in% c("successful", "failed")) %>%
+  group_by(year=year(launched), state) %>%
+  summarize(count=n()) %>%
+  mutate(pct=count/sum(count)) %>%
+  arrange(desc(state))
+
+ggplot(state.pct2, aes(year, pct, fill=state)) + geom_bar(stat="identity") + 
+  ggtitle("Success vs. Failure Rate by Year Launched") + 
+  xlab("Year") + ylab("Percentage") + scale_x_discrete(limits=c(2009:2017)) + 
+  scale_y_continuous(labels=scales::percent) + 
+  scale_fill_discrete(name="Project Status", breaks=c("successful", "failed"),
+                      labels=c("Success", "Failure")) + 
+  geom_text(aes(label=paste0(round(pct*100,1),"%")), position=position_stack(vjust=0.5), 
+            colour="white", size=3)  + 
+  theme(plot.title=element_text(hjust=0.5), axis.title=element_text(size=12, face="bold"), 
+        axis.text.x=element_text(size=10), legend.position="bottom", 
+        legend.title=element_text(size=10, face="bold"))
+```
+
+```{r}
+usd.amounts <- gather(ksp, type, amount, usd_pledged_real, usd_goal_real, factor_key=T)
+
+ggplot(usd.amounts, aes(log(amount+1), fill=type)) + 
+  geom_histogram(alpha=0.5, position="identity") + 
+  ggtitle("Distribution of log(USD Pledged) vs. log(USD Goal)") + xlab("log(USD + 1)") + 
+  ylab("Frequency") + scale_fill_discrete("Type", labels=c("USD Pledged", "USD Goal"))
+```
+
+
+
+```{r}
+ggplot(ksp.new[ksp.new$duration <= 61,], aes(duration)) + geom_density(colour="grey", size=1) + 
+  ggtitle("Distribution of Projects by Campaign Duration") + xlab("Project Length (Days)") + 
+  ylab("Density (%)") + scale_x_continuous(breaks=c(0,10,20,30,40,50,60)) + 
+  geom_vline(xintercept=30, colour="red") + 
+  theme(plot.title=element_text(hjust=0.5), axis.title=element_text(size=12, face="bold"))
+```
+
+```{r}
+p1 <- ggplot(ksp.new, aes(log(backers+1),  fill = ksp.new$state)) +
+  geom_density() +
+  theme(legend.position = "bottom") +
+  ylab("Number of Backers") + xlab("") +
+  ggtitle("# of Backers of the KS projects")
+
+p2 <- ggplot(ksp.new, aes(x = state, y = log(backers+1), fill = ksp.new$state)) +
+  geom_boxplot() +
+  coord_flip() + 
+  theme(legend.position = "bottom") +
+  ylab("# of Backers (log-transformed)") + xlab("") +
+  ggtitle("# of Backers of the KS projects (Log)")
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+
+
+```{r}
+p1 <- ggplot(ksp.new, aes(log(usd_pledged_real+1),  fill = ksp.new$state)) +
+  geom_density() +
+  theme(legend.position = "bottom") +
+  xlab("USD pledged (log-transformed)") + ylab("") +
+  ggtitle("USD pledged for the KS projects")
+
+# Log-transformed usd_pledged_real
+p2 <- ggplot(ksp.new, aes(x = state, y = log(usd_pledged_real+1), fill = ksp.new$state)) +
+  geom_boxplot() +
+  theme(legend.position = "bottom") +
+  ylab("USD pledged (log-transformed)") + xlab("") +
+  scale_y_continuous(labels = scales::comma) +
+  coord_flip() + 
+  ggtitle("USD pledged for the KS projects (Log)")
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+
+```{r}
+p1 <- ggplot(ksp.new, aes(log(usd_goal_real+1),  fill = ksp.new$state)) +
+  geom_density() +
+  theme(legend.position = "bottom") +
+  xlab("USD Goal (log-transformed)") + ylab("") +
+  ggtitle("USD pledged for the KS projects")
+
+# Log-transformed usd_pledged_real
+p2 <- ggplot(ksp.new, aes(x = state, y = log(usd_goal_real+1), fill = ksp.new$state)) +
+  geom_boxplot() +
+  theme(legend.position = "bottom") +
+  ylab("USD Goal (log-transformed)") + xlab("") +
+  scale_y_continuous(labels = scales::comma) +
+  coord_flip() + 
+  ggtitle("USD Goal for the KS projects (Log)")
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+
+```{r}
+ggplot(ksp.new, aes(launched_year, fill = ksp.new$state)) +
+  geom_bar() +
+  theme(legend.position = "bottom") +
+  facet_wrap( ~ main_category) +
+  ylab("Number of Projects") + xlab("Launched Year") 
+  ggtitle("KS projects launched over time by Category")
+```
+
+
+```{r}
+p1 <- ggplot(ksp.new, aes(x = log(backers+1), y = log(usd_pledged_real+1))) +
+  geom_jitter(aes(color = state)) +
+  theme(legend.position = "bottom") +
+  ylab("Amount pledged (log)") + xlab("Backers (log)") +
+  ggtitle("KS projects USD Pledged vs Backers")
+
+# 4. Goal vs Backers
+p2 <- ggplot(ksp.new, aes(x = log(backers+1), y = log(usd_goal_real+1))) +
+  geom_jitter(aes(color = state)) +
+  theme(legend.position = "bottom") +
+  ylab("Goal (log)") + xlab("Backers (log)") +
+  ggtitle("KS projects' Goal vs Backers")
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+
+```
+
+
+
+
+#Data split into training/test
+
+
+```{r}
+kspN <- ksp.new1[, c(4,9,10,11,13,14,15)]
+
+kspN <- kspN[kspN$currency == 'USD' & kspN$country == 'US',]
+
+kspN <- kspN[,-2:-3]
+
+kspN$backers <- log(kspN$backers+1)
+kspN$usd_goal_real <- log(kspN$usd_goal_real+1)
+
+normalize <- function(x) {
+               return ((x - min(x)) / (max(x) - min(x))) }
+
+kspN[,2:4] <- lapply(kspN[,2:4], normalize)
+
+rn_train <- sample(nrow(kspN), floor(nrow(kspN)*0.7))
+ksp.train <- kspN[rn_train,]
+ksp.test <- kspN[-rn_train,]
+#subsetting dataset which has a contribution to the target variable 
+#Splitting dataset into training and test with 7:3 ratio
+#logarithm and normalization is used for data normalization 
+```
+
+
+#PCA 
+```{r}
+kspN.split <- splitmix(kspN[,-5])
+
+X1 <- kspN.split$X.quanti 
+X2 <- kspN.split$X.quali
+
+res.pcamix <- PCAmix(X.quanti=X1, X.quali=X2,rename.level=TRUE,
+                     graph=FALSE)
+
+obj <- PCAmix(X.quanti = X1, X.quali = X2, ndim =2)
+
+
+
+```
+
+```{r}
+ksp.new2 <- data.frame(model.matrix(~.-1, data=kspN))
+ksp.new2 <- ksp.new2[,-19]
+ksp.pca.normdata <- prcomp(ksp.new2, scale=TRUE, center=TRUE)
+ksp.pca.normdata$rotation
+head(ksp.pca.normdata$x)
+```
+
+
+#Feature selection 
+
+```{r}
+null <- glm(state~1, data = ksp.train, family = "binomial")
+full <- glm(state~., data = ksp.train, family = "binomial")
+```
+
+
+
+```{r}
+stepF <- stepAIC(null, scope=list(lower=null, upper=full), direction= "forward", trace=TRUE)
+stepB <- stepAIC(full, direction= "backward", trace=TRUE)
+#Both forward and backward selection methods resulted same in the final model. All the variables will be used in this case. 
+```
+
+
+#Logistic Regression
+
+
+```{r}
+model.glm <- glm(state ~ duration + backers + main_category + usd_goal_real, data = ksp.train, family = "binomial")
+
+summary(model.glm)
+```
+
+hea
+```{r}
+predicted.train <- predict(model.glm, ksp.train, type='response')
+predicted_1.train <- ifelse(predicted.train >=0.5, 'successful','failed')
+predicted_1.train <- as.factor(predicted_1.train)
+results.train <-confusionMatrix(ksp.train$state, predicted_1.train)
+results.train
+
+precision_glm.train <- results.train$byClass['Pos Pred Value']
+precision_glm.train
+recall_glm.train <- results.train$byClass['Sensitivity']
+recall_glm.train 
+
+F1_glm.train <- 2*precision_glm.train*recall_glm.train/(precision_glm.train+recall_glm.train)
+F1_glm.train
+```
+
+
+```{r}
+
+predicted <- predict(model.glm, ksp.test, type='response')
+predicted_1 <- ifelse(predicted >=0.5, 'successful','failed')
+predicted_1 <- as.factor(predicted_1)
+results <-confusionMatrix(ksp.test$state, predicted_1)
+results
+precision_glm <- results$byClass['Pos Pred Value']
+precision_glm
+recall_glm <- results$byClass['Sensitivity']
+recall_glm 
+
+F1_glm <- 2*precision_glm*recall_glm/(precision_glm+recall_glm)
+F1_glm
+
+```
+
+
+```{r}
+rocCurve.glm.train  <-roc(ksp.train$state, predicted.train)
+plot(rocCurve.glm.train, type='S', col=c(5))
+auc(rocCurve.glm.train)
+```
+
+
+```{r}
+rocCurve.glm  <-roc(ksp.test$state, predicted)
+plot(rocCurve.glm, type='S', col=c(5))
+auc(rocCurve.glm)
+```
+
+
+
+
+#Random Forrest
+
+
+
+```{r}
+rf.model <- randomForest(formula = state~., data= ksp.train, importance=TRUE)
+
+```
+
+
+```{r}
+print(rf.model)
+```
+
+  
+```{r}
+#The randomforest has a random paremeter as 500 number of trees and 2 variables to split. Let's test which is the optimal number of trees and variables to split for my dataset. 
+
+oob.error.data <- data.frame(
+  Trees=rep(1:nrow(rf.model$err.rate), times=3),
+  Type=rep(c("OOB","successful", "failed"), each=nrow(rf.model$err.rate)),
+  Error=c(rf.model$err.rate[,"OOB"],
+         rf.model$err.rate[,"successful"],
+         rf.model$err.rate[,"failed"])  
+)
+```
+
+
+```{r}
+ggplot(data=oob.error.data, aes(x=Trees, y=Error)) + geom_line(aes(color=Type))
+```
+
+
+```{r}
+oob.values <- vector(length=4)
+for(i in 1:4){
+  temp.model <- randomForest(state~., data=ksp.train, mtry=i, ntree= 100)
+  oob.values[i] <- temp.model$err.rate[nrow(temp.model$err.rate),1]
+}
+oob.values
+```
+
+
+
+```{r}
+rf.model2 <- randomForest(state~., data=ksp.train, ntree=100 , mtry =1, importance=TRUE)
+```
+
+
+
+```{r}
+rf.predict.in <- predict(rf.model, ksp.train)
+rf.pred.in <- predict(rf.model, ksp.train, type='prob')
+confusionMatrix(ksp.train$state, rf.predict.in)
+```
+
+```{r}
+rf.predict.in2 <- predict(rf.model2, ksp.train)
+rf.pred.in2 <- predict(rf.model2, ksp.train, type='prob')
+results.rf <- confusionMatrix(ksp.train$state, rf.predict.in2)
+
+precision_rf <- results.rf$byClass['Pos Pred Value']
+precision_rf
+recall_rf <- results.rf$byClass['Sensitivity']
+recall_rf 
+
+F1_rf <- 2*precision_rf*recall_rf/(precision_rf+recall_rf)
+F1_rf
+```
+
+
+
+```{r}
+rf.predict.test <- predict(rf.model, ksp.test)
+rf.pred.in <- predict(rf.model, ksp.test, type='prob')
+rf_result <- confusionMatrix(ksp.test$state, rf.predict.test)
+rf_result 
+
+precision_rf <- rf_result$byClass['Pos Pred Value']
+precision_rf
+recall_rf <- rf_result$byClass['Sensitivity']
+recall_rf 
+
+F1_rf <- 2*precision_rf*recall_rf/(precision_rf+recall_rf)
+F1_rf
+```
+
+```{r}
+rf.predict.test2 <- predict(rf.model2, ksp.test)
+rf.pred.in2 <- predict(rf.model2, ksp.test, type='prob')
+rf_result2 <- confusionMatrix(ksp.test$state, rf.predict.test2)
+rf_result2 
+
+precision_rf <- rf_result2$byClass['Pos Pred Value']
+precision_rf
+recall_rf <- rf_result2$byClass['Sensitivity']
+recall_rf 
+
+F1_rf <- 2*precision_rf*recall_rf/(precision_rf+recall_rf)
+F1_rf
+```
+
+```{r}
+rocCurve.rf <- roc(ksp.test$state, rf.pred.in2[,2])
+plot(rocCurve.rf, type= 'S', col=c(2))
+```
+
+
+```{r}
+auc(rocCurve.rf)
+```
+
+
+  
+
+#kNN
+
+
+```{r}
+ksp.new2 <- data.frame(model.matrix(~.-1, data=kspN))
+ksp.new2$statesuccessful <- as.factor(ksp.new2$statesuccessful)
+
+rn_train2 <- sample(nrow(ksp.new2), floor(nrow(ksp.new2)*0.7))
+ksp.train2 <- ksp.new2[rn_train2,]
+ksp.test2 <- ksp.new2[-rn_train2,]
+
+```
+
+
+```{r}
+ctrl <- trainControl(method="repeatedcv",repeats = 3)
+knnFit <- train(statesuccessful ~ ., data = ksp.train2, method = "knn", trControl = ctrl, preProcess = c("center","scale"),tuneLength = 20)
+knnFit
+ 
+```
+
+
+
+```{r}
+knnpredict2 <- predict(knnFit, ksp.train2)
+knn.prob2 <- predict(knnFit, ksp.train2, type='prob')
+knn_result2 <- confusionMatrix(knnpredict2, ksp.train2$statesuccessful)
+knn_result2
+  
+precision_knn <- knn_result2$byClass['Pos Pred Value']
+precision_knn
+recall_knn <- knn_result2$byClass['Sensitivity']
+recall_knn 
+  
+F1_knn <- 2*precision_knn*recall_knn/(precision_knn+recall_knn)
+F1_knn
+```
+
+```{r}
+knnpredict <- predict(knnFit, ksp.test2)
+knn.prob <- predict(knnFit, ksp.test2, type='prob')
+knn_result <- confusionMatrix(knnpredict, ksp.test2$statesuccessful)
+knn_result
+  
+precision_knn <- knn_result$byClass['Pos Pred Value']
+precision_knn
+recall_knn <- knn_result$byClass['Sensitivity']
+recall_knn 
+  
+F1_knn <- 2*precision_knn*recall_knn/(precision_knn+recall_knn)
+F1_knn
+
+```
+
+
+```{r}
+k29 <- knn(ksp.train2[,-19], ksp.test2[,-19], ksp.train2[,19], k=29)
+
+
+CrossTable(ksp.test2[,19], k29, prop.chisq = FALSE)
+
+```
+```{r}
+rocCurve.knn <- roc(ksp.test2$state, knn.prob[,2])
+plot(rocCurve.knn, type= 'S', col=c(3))
+```
+
+```{r}
+auc(rocCurve.knn)
+```
+
+
+#SVM
+
+```{r}
+svmFit <- train(state ~ .,
+    data = ksp.train,
+    method = "svmLinear",
+    preProc = c("center", "scale"),
+    trControl = trainControl(method = "repeatedcv", repeats = 5, classProbs =  TRUE))
+```
+
+
+
+```{r}
+svm.probs.train <- predict(svmFit, ksp.train, type='prob')
+svm.probs <- predict(svmFit, ksp.test, type='prob')
+```
+
+
+
+
+```{r}
+svm.pred <- predict(svmFit, ksp.train)
+svm_result.train <- confusionMatrix(svm.pred, ksp.train$state)
+
+svm_result.train
+
+precision_svm <- svm_result.train$byClass['Pos Pred Value']
+precision_svm
+recall_svm <- svm_result.train$byClass['Sensitivity']
+recall_svm 
+  
+F1_svm <- 2*precision_svm*recall_svm/(precision_svm+recall_svm)
+F1_svm
+```
+
+```{r}
+svm.pred.test <- predict(svmFit, ksp.test)
+svm_result <- confusionMatrix(svm.pred.test, ksp.test$state)
+
+svm_result
+
+precision_svm <- svm_result$byClass['Pos Pred Value']
+precision_svm
+recall_svm <- svm_result$byClass['Sensitivity']
+recall_svm 
+  
+F1_svm <- 2*precision_svm*recall_svm/(precision_svm+recall_svm)
+F1_svm
+```
+
+```{r}
+rocCurve.svm.train  <-roc(ksp.train$state, svm.probs.train[,2])
+plot(rocCurve.svm.train, type='S', col=c(6))
+auc(rocCurve.svm.train)
+```
+
+```{r}
+rocCurve.svm  <-roc(ksp.test$state, svm.probs[,2])
+plot(rocCurve.svm, type='S', col=c(6))
+```
+
+```{r}
+auc(rocCurve.svm)
+```
+
+
+
+#Ensemble Methods
+
+
+```{r}
+train.gbm <- train(state ~ ., 
+                   data=ksp.train,
+                   method="gbm",
+                   verbose=F,
+                   trControl=control)
+train.gbm
+```
+
+
+```{r}
+gbm.classTrain <-  predict(train.gbm, ksp.train)
+gbm_result.train <- confusionMatrix(ksp.train$state, gbm.classTrain)
+gbm_result.train
+
+precision_gbm <- gbm_result.train$byClass['Pos Pred Value']
+precision_gbm
+recall_gbm <- gbm_result.train$byClass['Sensitivity']
+recall_gbm 
+  
+F1_gbm <- 2*precision_gbm*recall_gbm/(precision_gbm+recall_gbm)
+F1_gbm
+```
+
+
+```{r}
+gbm.classTest <-  predict(train.gbm, ksp.test)
+gbm_result <- confusionMatrix(ksp.test$state, gbm.classTest)
+gbm_result
+
+precision_gbm <- gbm_result$byClass['Pos Pred Value']
+precision_gbm
+recall_gbm <- gbm_result$byClass['Sensitivity']
+recall_gbm 
+  
+F1_gbm <- 2*precision_gbm*recall_gbm/(precision_gbm+recall_gbm)
+F1_gbm
+```
+
+```{r}
+gbm.probs=predict(train.gbm,
+                 ksp.test,
+                 type="prob")
+gbm.probs.train <- predict(train.gbm, ksp.train, type='prob')
+
+head(gbm.probs)
+```
+
+```{r}
+rocCurve.gbm.train <- roc(ksp.train$state, gbm.probs.train[,2])
+plot(rocCurve.gbm.train, col=c(4))
+auc(rocCurve.gbm.train)
+```
+
+
+
+```{r}
+rocCurve.gbm <- roc(ksp.test$state,gbm.probs[,2])
+
+plot(rocCurve.gbm, col=c(4))
+```
+
+```{r}
+auc(rocCurve.gbm)
+```
+
+
+```{r}
+plot(rocCurve.glm, type="S",main= 'ROC Curve Comparison', col="red")
+plot(rocCurve.rf, type="S", add = TRUE, col="green")
+plot(rocCurve.knn, type="S",add = TRUE, col="blue")
+plot(rocCurve.gbm, type='S',add = TRUE, col="orange")
+plot(rocCurve.svm, type='S', add = TRUE, col ='pink')
+legend("right", legend=c('GLM - 0.9814', '  RF  - 0.978', 'KNN - 0.9799', 'GBM - 0.9824', 'SVM - 0.9814' ), col=c("red", "green", 'blue','orange','pink'), title ='Area Under Curve(AUC)', lty=1, cex=0.9)
+
+
+```
+
+
+
